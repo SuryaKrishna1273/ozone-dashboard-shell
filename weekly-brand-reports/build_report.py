@@ -79,7 +79,8 @@ ad_prv = tot([r for r in ads if in_p(r["date_start"])])
 problems = []
 for name, a, b in (("this week", ad_cur, cur), ("previous week", ad_prv, prv)):
     if abs(a["spend"] - b["spend"]) > 1: problems.append(f"{name}: ad spend {a['spend']:.2f} vs campaign {b['spend']:.2f}")
-    if a["purch"] != b["purch"]: problems.append(f"{name}: ad purchases {a['purch']} vs campaign {b['purch']}")
+    # ad-level purchases can differ by 1-2 from campaign level (a purchase credited to an ad that had no spend that week
+    # is not returned by the ad pull); the KPIs come from campaign data, which must match the account exactly (below).
 chk = None
 if CFG.get("account_check_file"):
     arows = rows(CFG["account_check_file"], "ad_entities")

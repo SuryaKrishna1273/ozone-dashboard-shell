@@ -15,7 +15,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 BR = json.load(open(os.path.join(HERE, "brands.json")))
 cmd, key = sys.argv[1], sys.argv[2]
 b = next(x for x in BR["brands"] if x["key"] == key)
-WORK = f"/tmp/wbr/{key}"  # Ozone attached fine from here; the Anemone refusal was the 5.4 MB size
+# Gmail attach-by-reference refuses files under /tmp; the working folder /home/claude works (tested 14 Nov 2026)
+BASE = "/home/claude/wbr" if os.path.isdir("/home/claude") else os.path.join(os.getcwd(), "wbr")
+WORK = f"{BASE}/{key}"
 os.makedirs(WORK + "/raw", exist_ok=True)
 STATE = WORK + "/state.json"
 IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
@@ -48,12 +50,13 @@ if cmd == "dates":
 
 elif cmd == "chunks":
     # Meta silently drops rows on long daily pulls, so pull one Monday-Sunday week per call.
+    # Ads only need weekly totals (one row per ad per week), which keeps big accounts like Ozone small.
     st = json.load(open(STATE)); we = dt.date.fromisoformat(st["week_end"])
     out = []
     for lvl, name, n in (("campaign", "camp_daily", 10), ("ad", "ad_daily", 2)):
         for i in range(n - 1, -1, -1):
             e = we - dt.timedelta(days=7 * i); s = e - dt.timedelta(days=6)
-            out.append(dict(level=lvl, since=s.isoformat(), until=e.isoformat(),
+            out.append(dict(level=lvl, since=s.isoformat(), until=e.isoformat(), time_increment="1" if lvl == "campaign" else "7",
                             out=f"{WORK}/raw/{name}.w{s.strftime('%m%d')}.p1.json"))
     for f in os.listdir(WORK + "/raw"):
         if ".w" in f: os.remove(os.path.join(WORK, "raw", f))

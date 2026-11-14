@@ -3,17 +3,19 @@
   python3 -I prep.py dates <brand_key> [YYYY-MM-DD week_end]   -> work dir + every date range the Meta calls need
   python3 -I prep.py subject <brand_key> [--test]               -> Gmail search finding this week's email if already sent
   python3 -I prep.py creative_ids <brand_key>                   -> creative ids with spend in the report week (JSON list)
+  python3 -I prep.py chunks <brand_key>                         -> the weekly Meta pulls to make (one week per call)
+  python3 -I prep.py combine <brand_key>                        -> joins the weekly pulls into camp_daily.json / ad_daily.json
   python3 -I prep.py thumbs <brand_key>                         -> downloads thumbnails of the top creatives
   python3 -I prep.py config <brand_key>                         -> writes config.json for build_report.py
   python3 -I prep.py email <brand_key> [--test]                 -> subject, recipients, body and attachment reference
 """
-import json, sys, os, datetime as dt, hashlib, urllib.request, collections
+import json, sys, os, io, datetime as dt, hashlib, urllib.request, collections
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BR = json.load(open(os.path.join(HERE, "brands.json")))
 cmd, key = sys.argv[1], sys.argv[2]
 b = next(x for x in BR["brands"] if x["key"] == key)
-WORK = f"/tmp/wbr/{key}"
+WORK = f"/tmp/wbr/{key}"  # Ozone attached fine from here; the Anemone refusal was the 5.4 MB size
 os.makedirs(WORK + "/raw", exist_ok=True)
 STATE = WORK + "/state.json"
 IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
@@ -40,9 +42,35 @@ if cmd == "dates":
     st = dict(week_end=we.isoformat(), week_start=ws.isoformat(),
               camp_since=(we - dt.timedelta(days=69)).isoformat(),
               ad_since=(ws - dt.timedelta(days=7)).isoformat(),
-              acct_since=(ws - dt.timedelta(days=7)).isoformat())
+              acct_since=(we - dt.timedelta(days=69)).isoformat())
     json.dump(st, open(STATE, "w"))
     print(json.dumps(dict(work=WORK, account=b["account_id"], **st), indent=1))
+
+elif cmd == "chunks":
+    # Meta silently drops rows on long daily pulls, so pull one Monday-Sunday week per call.
+    st = json.load(open(STATE)); we = dt.date.fromisoformat(st["week_end"])
+    out = []
+    for lvl, name, n in (("campaign", "camp_daily", 10), ("ad", "ad_daily", 2)):
+        for i in range(n - 1, -1, -1):
+            e = we - dt.timedelta(days=7 * i); s = e - dt.timedelta(days=6)
+            out.append(dict(level=lvl, since=s.isoformat(), until=e.isoformat(),
+                            out=f"{WORK}/raw/{name}.w{s.strftime('%m%d')}.p1.json"))
+    for f in os.listdir(WORK + "/raw"):
+        if ".w" in f: os.remove(os.path.join(WORK, "raw", f))
+    print(json.dumps(out, indent=1))
+
+elif cmd == "combine":
+    import glob
+    st = json.load(open(STATE)); we = dt.date.fromisoformat(st["week_end"])
+    for name, n in (("camp_daily", 10), ("ad_daily", 2)):
+        allr = []
+        for i in range(n - 1, -1, -1):
+            s = we - dt.timedelta(days=7 * i + 6)
+            parts = sorted(glob.glob(f"{WORK}/raw/{name}.w{s.strftime('%m%d')}.p*.json"), key=lambda f: int(f.rsplit(".p", 1)[1][:-5]))
+            if not parts: sys.exit(f"MISSING CHUNK {name} week {s}")
+            for f in parts: allr.extend(load(f))
+        json.dump({"ad_entities": allr}, open(f"{WORK}/raw/{name}.json", "w"))
+        print(name, len(allr), "rows")
 
 elif cmd == "subject":
     test = "--test" in sys.argv
@@ -71,7 +99,9 @@ elif cmd == "thumbs":
         c = cr.get(i, {}); url = c.get("image_url") or c.get("thumbnail_url")
         if not url: continue
         try:
-            open(f"{WORK}/thumbs/{i}.jpg", "wb").write(urllib.request.urlopen(url, timeout=20).read()); ok += 1
+            from PIL import Image
+            im = Image.open(io.BytesIO(urllib.request.urlopen(url, timeout=20).read())).convert("RGB")
+            im.thumbnail((240, 240)); im.save(f"{WORK}/thumbs/{i}.jpg", "JPEG", quality=72, optimize=True); ok += 1
         except Exception as e:
             print("thumb failed", i, str(e)[:80])
     print("thumbnails", ok, "of", min(len(ids), 15))
@@ -95,6 +125,7 @@ elif cmd == "email":
     rng = f"{ws.strftime('%-d %b')} – {we.strftime('%-d %b %Y')}"
     pdf = f"{WORK}/{cfg['out']}.pdf"
     if not os.path.exists(pdf): sys.exit("NO PDF: build did not pass")
+    if os.path.getsize(pdf) > 3_000_000: sys.exit(f"PDF TOO BIG: {os.path.getsize(pdf)} bytes (limit 3,000,000)")
     sha = hashlib.sha256(open(pdf, "rb").read()).hexdigest()
     subject = f"{b['brand']} × Epigroww | Meta Ads Weekly Report | {rng}"
     if test: subject = "[TEST] " + subject

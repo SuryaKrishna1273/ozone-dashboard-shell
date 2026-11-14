@@ -145,6 +145,14 @@ for i in range(NWEEKS - 1, -1, -1):
     weeks.append((s, e, t))
 if D(min(days_seen)) > weeks[0][0]:
     sys.exit("GATE FAILED: campaign file does not cover the 10-week trend")
+if CFG.get("account_check_file"):  # every trend week must tie to Meta's own account total
+    wbad = []
+    for s, e, t in weeks:
+        r = byw.get(s.isoformat())
+        rs, rp = (num(r["amount_spent"]), num(r["omni_purchase"])) if r else (0.0, 0.0)
+        if abs(t["spend"] - rs) > 1 or t["purch"] != rp:
+            wbad.append(f"week {s}: campaign spend {t['spend']:.2f} vs account {rs:.2f}")
+    if wbad: sys.exit("GATE FAILED: " + "; ".join(wbad))
 
 def week_bars(metric, color, title, fmt, target=None):
     fig, ax = plt.subplots(figsize=(5.2, 2.5))

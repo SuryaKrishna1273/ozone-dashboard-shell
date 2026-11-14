@@ -80,8 +80,10 @@ elif cmd == "subject":
     st = json.load(open(STATE))
     we = dt.date.fromisoformat(st["week_end"]); ws = dt.date.fromisoformat(st["week_start"])
     subject = f"{b['brand']} × Epigroww | Meta Ads Weekly Report | {ws.strftime('%-d %b')} – {we.strftime('%-d %b %Y')}"
-    if test: subject = "[TEST] " + subject
-    print(f'in:sent subject:"{subject}"')
+    # Gmail can't match the full subject (× – | characters), so match its plain parts. Tested 14 Nov 2026.
+    q = (f'in:sent newer_than:6d subject:"Meta Ads Weekly Report" subject:"{b["brand"]}" '
+         f'subject:"{ws.strftime("%-d %b")}" ' + ("subject:TEST" if test else "-subject:TEST"))
+    print(q)
 
 elif cmd == "creative_ids":
     st = json.load(open(STATE))
@@ -144,4 +146,5 @@ elif cmd == "email":
         cc=[] if test else b["cc"],
         subject=subject, htmlBody=body_html, body=body_text,
         attachment=dict(filename=os.path.basename(pdf), mimeType="application/pdf", content=f"sha256:{sha}:{pdf}"),
-        sent_search=f'in:sent subject:"{subject}"'), indent=1, ensure_ascii=False))
+        sent_search=(f'in:sent newer_than:6d subject:"Meta Ads Weekly Report" subject:"{b["brand"]}" '
+                     f'subject:"{ws.strftime("%-d %b")}" ' + ("subject:TEST" if test else "-subject:TEST"))), indent=1, ensure_ascii=False))

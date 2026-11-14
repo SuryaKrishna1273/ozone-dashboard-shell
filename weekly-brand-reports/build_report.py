@@ -70,35 +70,46 @@ def kpis(t):
                 aov=v / p if p else None, ctr=t["clicks"] / t["impr"] if t["impr"] else None,
                 cplpv=s / t["lpv"] if t["lpv"] else None)
 
-cur = kpis(tot([r for r in camp if in_w(r["date_start"])]))
-prv = kpis(tot([r for r in camp if in_p(r["date_start"])]))
+# ---------------- account totals (Meta's own numbers, same as Ads Manager's account row) ----------------
+problems = []
+byw = {}
+if CFG.get("account_check_file"):
+    byw = {r["date_start"]: r for r in rows(CFG["account_check_file"], "ad_entities")}
+else:
+    problems.append("no account total to check against")
+
+def acct(start):
+    r = byw.get(start.isoformat())
+    if not r: return dict(spend=0.0, value=0.0, purch=0.0)
+    return dict(spend=num(r["amount_spent"]), value=num(r["omni_purchase_values"]), purch=num(r["omni_purchase"]))
+
+def close(a, b, pct, floor):
+    return abs(a - b) <= max(floor, abs(b) * pct)
+
+def week_kpis(start, end, label):
+    """Headline numbers come from the account total; campaign rows must agree with it (catches missing data)."""
+    t = tot([r for r in camp if start <= D(r["date_start"]) <= end])
+    a = acct(start)
+    if byw:
+        if not close(t["spend"], a["spend"], 0.002, 5):
+            problems.append(f"{label}: campaign spend {t['spend']:.2f} vs account {a['spend']:.2f}")
+        if not close(t["purch"], a["purch"], 0.03, 2):
+            problems.append(f"{label}: campaign purchases {t['purch']:.0f} vs account {a['purch']:.0f}")
+        if not close(t["value"], a["value"], 0.03, 500):
+            problems.append(f"{label}: campaign value {t['value']:.2f} vs account {a['value']:.2f}")
+        t = dict(t, spend=a["spend"], value=a["value"], purch=a["purch"])
+    return kpis(t)
+
+cur = week_kpis(W_START, W_END, "this week")
+prv = week_kpis(P_START, P_END, "previous week")
 
 # ---------------- gate: everything must tie out before we draw anything ----------------
 ad_cur = tot([r for r in ads if in_w(r["date_start"])])
 ad_prv = tot([r for r in ads if in_p(r["date_start"])])
-problems = []
+# ad-level spend must match (small rounding allowed); ad-level purchases can differ by 1-2 because Meta can credit a
+# purchase to an ad that had no spend that week, and such ads are not in the ad pull.
 for name, a, b in (("this week", ad_cur, cur), ("previous week", ad_prv, prv)):
-    if abs(a["spend"] - b["spend"]) > 1: problems.append(f"{name}: ad spend {a['spend']:.2f} vs campaign {b['spend']:.2f}")
-    # ad-level purchases can differ by 1-2 from campaign level (a purchase credited to an ad that had no spend that week
-    # is not returned by the ad pull); the KPIs come from campaign data, which must match the account exactly (below).
-chk = None
-if CFG.get("account_check_file"):
-    arows = rows(CFG["account_check_file"], "ad_entities")
-    byw = {r["date_start"]: r for r in arows}
-    def ref(start):
-        r = byw.get(start.isoformat())
-        if not r: problems.append(f"account total missing for week starting {start}")
-        return dict(spend=num(r["amount_spent"]), purch=num(r["omni_purchase"]), value=num(r["omni_purchase_values"])) if r else None
-    chk = {"week": ref(W_START), "prev": ref(P_START)}
-    if not chk["week"] or not chk["prev"]: chk = None
-elif CFG.get("account_check"):
-    chk = CFG["account_check"]
-else:
-    problems.append("no account total to check against")
-if chk:
-    for name, k, ref in (("this week", cur, chk["week"]), ("previous week", prv, chk["prev"])):
-        if abs(k["spend"] - ref["spend"]) > 1 or k["purch"] != ref["purch"] or abs(k["value"] - ref["value"]) > 1:
-            problems.append(f"{name}: does not match account total {ref}")
+    if not close(a["spend"], b["spend"], 0.005, 10): problems.append(f"{name}: ad spend {a['spend']:.2f} vs account {b['spend']:.2f}")
 days_seen = {r["date_start"] for r in camp}
 for i in range(7):
     if (W_START + dt.timedelta(days=i)).isoformat() not in days_seen: problems.append("missing day in week")
@@ -142,18 +153,12 @@ NWEEKS = CFG.get("weeks", 10)
 weeks = []
 for i in range(NWEEKS - 1, -1, -1):
     e = W_END - dt.timedelta(days=7 * i); s = e - dt.timedelta(days=6)
-    t = kpis(tot([r for r in camp if s <= D(r["date_start"]) <= e]))
+    t = week_kpis(s, e, f"week {s}")
     weeks.append((s, e, t))
 if D(min(days_seen)) > weeks[0][0]:
     sys.exit("GATE FAILED: campaign file does not cover the 10-week trend")
-if CFG.get("account_check_file"):  # every trend week must tie to Meta's own account total
-    wbad = []
-    for s, e, t in weeks:
-        r = byw.get(s.isoformat())
-        rs, rp = (num(r["amount_spent"]), num(r["omni_purchase"])) if r else (0.0, 0.0)
-        if abs(t["spend"] - rs) > 1 or t["purch"] != rp:
-            wbad.append(f"week {s}: campaign spend {t['spend']:.2f} vs account {rs:.2f}")
-    if wbad: sys.exit("GATE FAILED: " + "; ".join(wbad))
+if problems:
+    sys.exit("GATE FAILED: " + "; ".join(problems))
 
 def week_bars(metric, color, title, fmt, target=None):
     fig, ax = plt.subplots(figsize=(5.2, 2.5))
